@@ -21,9 +21,21 @@
 
 static void camera_buffer_release(Buffer *buffers, int buffNum);
 
+
+static int camera_ioctl(int fd, int request, void *arg)
+{
+    int ret = -1;
+    do
+    {
+        ret = ioctl(fd, request, arg);
+    } while (ret < 0 && EINTR == errno);
+
+    return ret;
+}
+
 /***********************************
- *  [in]:       deviceName -- camera node
- *  [return]：  fd -- open success , ERROR -- open failed
+ *  @param  deviceName -- camera node
+ *  @return  fd -- open success , ERROR -- open failed
  ***********************************/
 static int camera_open(char* deviceName)
 {
@@ -43,7 +55,8 @@ static int camera_open(char* deviceName)
         return ERROR;
     }
 
-    fd = open(deviceName, O_RDWR | O_NONBLOCK, 0);
+    // O_NONBLOCK,需阻塞方式打开，使用非阻塞会在取缓冲帧时一直返回EAGAIN
+    fd = open(deviceName, O_RDWR, 0);
     if(fd < 0)
     {
         DBGLOG("cannot open %s:%d, %s\n", deviceName, errno, strerror(errno));
@@ -59,7 +72,7 @@ static int camera_query_cap(int fd)
     struct v4l2_capability cap;
 
     memset(&cap, 0, sizeof(cap));
-    if(ioctl(fd, VIDIOC_QUERYCAP, &cap) < 0)
+    if(camera_ioctl(fd, VIDIOC_QUERYCAP, &cap) < 0)
     {
         DBGLOG("VIDIOC_QUERYCAP error: %d %s\n", errno, strerror(errno));
         return ERROR;
@@ -94,7 +107,7 @@ static int camera_enum_input(int fd)
     struct v4l2_input input;
 
     memset(&input, 0, sizeof(input));
-    if(ioctl(fd, VIDIOC_ENUMINPUT, &input) < 0)
+    if(camera_ioctl(fd, VIDIOC_ENUMINPUT, &input) < 0)
     {
         DBGLOG("VIDIOC_ENUMINPUT error: %d %s\n", errno, strerror(errno));
         return ERROR;
@@ -116,7 +129,7 @@ static int camera_enum_input(int fd)
 static int camera_query_std(int fd)
 {
     v4l2_std_id std = 0;
-    if(ioctl(fd, VIDIOC_QUERYSTD, &std) < 0)
+    if(camera_ioctl(fd, VIDIOC_QUERYSTD, &std) < 0)
     {
         DBGLOG("VIDIOC_QUERYSTD error:%d %s\n", errno, strerror(errno));
         return ERROR;
@@ -152,7 +165,7 @@ static int camera_set_video_fmt(int fd, ResInfo* resInfo)
     fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;    // yuv422
     fmt.fmt.pix.field       = V4L2_FIELD_INTERLACED;    // 隔行扫描
 
-    if(ioctl(fd, VIDIOC_S_FMT, &fmt) < 0)
+    if(camera_ioctl(fd, VIDIOC_S_FMT, &fmt) < 0)
     {
         DBGLOG("VIDIOC_S_FMT error:%d %s\n", errno, strerror(errno));
         return ERROR;
@@ -167,7 +180,7 @@ static int camera_set_video_fmt(int fd, ResInfo* resInfo)
 }
 
 
-static int camera_request_buffer(int fd, Buffer *buffers, int *buffNum)
+static int camera_request_buffer(CameraInfo* cam)
 {
     struct v4l2_requestbuffers req;
     struct v4l2_buffer v4l2Buf;
@@ -178,7 +191,7 @@ static int camera_request_buffer(int fd, Buffer *buffers, int *buffNum)
 	req.type     = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	req.memory   = V4L2_MEMORY_MMAP;    // 使用mmap
 
-    if(ioctl(fd, VIDIOC_REQBUFS, &req) < 0)
+    if(camera_ioctl(cam->devFd, VIDIOC_REQBUFS, &req) < 0)
     {
         DBGLOG("VIDIOC_REQBUFS error:%d %s\n", errno, strerror(errno));
         return ERROR;
@@ -186,15 +199,15 @@ static int camera_request_buffer(int fd, Buffer *buffers, int *buffNum)
     else
     {
         DBGLOG("VIDIOC_REQBUFS:count = %d\n", req.count);
-        *buffNum = req.count;
+        cam->buffNum = req.count;
     }
 
     memset(&v4l2Buf, 0, sizeof(v4l2Buf));
 	v4l2Buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	v4l2Buf.memory = V4L2_MEMORY_MMAP;
 
-    buffers = calloc(req.count, sizeof(*(buffers)));
-	if (!buffers) {
+    cam->buffers = calloc(req.count, sizeof(*(cam->buffers)));
+	if (!cam->buffers) {
 		DBGLOG("calloc failed,Out of memory\n");
 		return ERROR;
 	}
@@ -202,19 +215,19 @@ static int camera_request_buffer(int fd, Buffer *buffers, int *buffNum)
     for(i = 0; i < req.count; ++i)
     {
         v4l2Buf.index = i;
-        if(ioctl(fd, VIDIOC_QUERYBUF, &v4l2Buf) < 0)
+        if(camera_ioctl(cam->devFd, VIDIOC_QUERYBUF, &v4l2Buf) < 0)
         {
             DBGLOG("VIDIOC_QUERYBUF [%d] error: %d %s\n", i, errno, strerror(errno));
             return ERROR;
         }
-        buffers[i].length = v4l2Buf.length;
-        buffers[i].start  = mmap(NULL, v4l2Buf.length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, v4l2Buf.m.offset);
-        if(MAP_FAILED == buffers[i].start)
+        cam->buffers[i].length = v4l2Buf.length;
+        cam->buffers[i].start  = mmap(NULL, v4l2Buf.length, PROT_READ | PROT_WRITE, MAP_SHARED, cam->devFd, v4l2Buf.m.offset);
+        if(MAP_FAILED == cam->buffers[i].start)
         {
             DBGLOG("buffer[%d] mmap fafiled!", i);
             if(i > 0)
             {
-                camera_buffer_release(buffers, i);
+                camera_buffer_release(cam->buffers, i);
             }
             return ERROR;
         }
@@ -262,7 +275,7 @@ int camera_init(CameraInfo* cam)
         return ERROR;
     }
 
-    if(ERROR == camera_request_buffer(cam->devFd, cam->buffers, &(cam->buffNum)))
+    if(ERROR == camera_request_buffer(cam))
     {
         cam->buffNum = 0;
         DBGLOG("camera_set_video_fmt failed!\n");
@@ -301,14 +314,14 @@ int camera_capture_start(int fd, int buffNum)
     for(i = 0; i < buffNum; ++i)
     {
         buf.index = i;
-        if(ioctl(fd, VIDIOC_QBUF, &buf) < 0)
+        if(camera_ioctl(fd, VIDIOC_QBUF, &buf) < 0)
         {
             DBGLOG("VIDIOC_QBUF error:%d %s\n", errno, strerror(errno));
             return ERROR;
         }
     }
 
-    if(ioctl(fd, VIDIOC_STREAMON, &type) < 0)
+    if(camera_ioctl(fd, VIDIOC_STREAMON, &type) < 0)
     {
         DBGLOG("VIDIOC_STREAMON error:%d %s\n", errno, strerror(errno));
         return ERROR;
@@ -321,10 +334,44 @@ void camera_capture_stop(int fd)
 {
     enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 
-    if(ioctl(fd, VIDIOC_STREAMOFF, &type) < 0)
+    if(camera_ioctl(fd, VIDIOC_STREAMOFF, &type) < 0)
     {
         DBGLOG("VIDIOC_STREAMOFF error:%d %s\n", errno, strerror(errno));
         return ;
     }
 }
 
+
+int camera_read_frame(CameraInfo* cam)
+{
+    struct v4l2_buffer buf;
+
+    memset(&buf, 0, sizeof(buf));
+    buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    buf.memory = V4L2_MEMORY_MMAP;
+    if(camera_ioctl(cam->devFd, VIDIOC_DQBUF, &buf) < 0)
+    {
+        switch (errno)
+        {
+        case EAGAIN:
+            DBGLOG("camera_read_frame EAGAIN\n");
+            return OK;
+            break;
+        case EIO:
+            /* 忽略 */
+        default:
+            return ERROR;
+            break;
+        }
+    }
+
+    cam->deal_frame(cam->buffers[buf.index].start, buf.length);
+
+    if(camera_ioctl(cam->devFd, VIDIOC_QBUF, &buf) < 0)
+    {
+        DBGLOG("camera_read_frame VIDIOC_QBUF error:%d %s\n", errno, strerror(errno));
+        return ERROR;
+    }
+
+    return OK;
+}

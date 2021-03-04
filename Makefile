@@ -10,23 +10,14 @@ OBJDUMP		= $(CROSS_COMPILE)objdump
 TARGET = videoServer
 
 SRC_DIR := $(PWD)/src
-SRC += $(wildcard $(SRC_DIR)/*.c) 
-SRC += $(wildcard $(SRC_DIR)/protocol/*.c) 
-
-SRC += $(wildcard $(SRC_DIR)/socket/*.c) 
-SRC += $(wildcard $(SRC_DIR)/socket/TCP/*.c) 
-SRC += $(wildcard $(SRC_DIR)/socket/UDP/*.c) 
-
-SRC += $(wildcard $(SRC_DIR)/dataSource/video/*.c) 
-SRC += $(wildcard $(SRC_DIR)/dataSource/encoder/*.c) 
-SRC += $(wildcard $(SRC_DIR)/dataSource/audio/*.c) 
-
+DIRS = $(shell find $(SRC_DIR) -maxdepth 3 -type d)
+SRC += $(foreach dir, $(DIRS), $(wildcard $(dir)/*.c))
 OBJ = $(patsubst %.c, %.o, $(SRC))
 
 CFLAG = -I./include -Wall -g
-DFLAG = 
+DFLAG = -lasound
 $(TARGET):$(OBJ)
-	$(CC) -o $@ $^
+	$(CC) -o $@ $^ $(DFLAG)
 
 %.o:%.c
 	$(CC) $(CFLAG) -c -o $@ $<

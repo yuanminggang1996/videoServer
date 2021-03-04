@@ -23,11 +23,13 @@ typedef struct v4l2Camera
     ResInfo resInfo;    // 视频采集分辨率，由摄像头决定，可压缩
     int     buffNum;    // 申请的帧缓冲个数
     Buffer  *buffers;   // 帧缓冲地址   
+    void (*deal_frame)(void*,int);
 }CameraInfo;
 
 int camera_init(CameraInfo* cam);
 void camera_close(CameraInfo* cam);
 int camera_capture_start(int fd, int buffNum);
 void camera_capture_stop(int fd);
+int camera_read_frame(CameraInfo* cam);
 void start_video_capture(void);
 #endif 
